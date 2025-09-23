@@ -26,12 +26,15 @@ pub fn build(b: *std.Build) void {
         },
     ) catch unreachable;
 
-    const exe = b.addExecutable(.{
-        .name = exe_name,
+    const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .strip = strip,
+    });
+    const exe = b.addExecutable(.{
+        .name = exe_name,
+        .root_module = mod,
     });
     exe.want_lto = lto;
 
@@ -50,9 +53,7 @@ pub fn build(b: *std.Build) void {
 
     const check = b.addExecutable(.{
         .name = "check",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = mod,
     });
     check.root_module.addImport("s2s", s2s);
     check.root_module.addImport("mdb", lmdb);
@@ -81,7 +82,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const exe_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_module = mod,
     });
     exe_tests.root_module.addImport("s2s", s2s);
     exe_tests.root_module.addImport("mdb", lmdb);

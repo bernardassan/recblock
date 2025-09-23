@@ -2,15 +2,15 @@
     .name = .recblock,
     .version = "0.1.0",
     .fingerprint = 0x9980370ddd3fc3f1,
-    .minimum_zig_version = "0.15.0-dev.151+6e8493daa",
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .s2s = .{
-            .url = "https://github.com/Ultra-Code/s2s/archive/76d7aea86c1d05afaddab9a1081b6dad68088756.tar.gz",
-            .hash = "s2s-0.0.1-qt8ajW97AADgZZjymAzXPnLV3sR2Fo0r4k7WGJkfftJ1",
+            .url = "https://github.com/ziglibs/s2s/archive/a51f347ae5e01ad634cf736e054cf348d90c4f04.tar.gz",
+            .hash = "s2s-0.0.1-qt8ajd57AAA--HKwcpRdTd5Gr2anqqceKchvLmkSTywh",
         },
         .lmdb = .{
-            .url = "https://github.com/allyourcodebase/lmdb/archive/refs/tags/0.9.31+2.tar.gz",
-            .hash = "lmdb-0.9.31+2-ymBDR9M3AAAuqe96eqjOxou621_bZndPtxiOGnpDSg9Z",
+            .url = "https://github.com/allyourcodebase/lmdb/archive/refs/tags/0.9.31+3.tar.gz",
+            .hash = "lmdb-0.9.31+3-ymBDRxI4AAAHlUwGeWx2B6-PqQBwq9G_dSpCYNR2kKOj",
         },
     },
     .paths = .{
