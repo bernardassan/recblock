@@ -5,12 +5,12 @@
     .minimum_zig_version = "0.15.0-dev.151+6e8493daa",
     .dependencies = .{
         .s2s = .{
-            .url = "https://github.com/Ultra-Code/s2s/archive/76d7aea86c1d05afaddab9a1081b6dad68088756.tar.gz",
-            .hash = "s2s-0.0.1-qt8ajW97AADgZZjymAzXPnLV3sR2Fo0r4k7WGJkfftJ1",
+            .url = "https://github.com/ziglibs/s2s/archive/eeccd16e60ef9fd7fbb9a3b1b82e88f74f7631f0.tar.gz",
+            .hash = "s2s-0.0.1-qt8ajYV8AAB9m_WoCGu-BRH1ghuvFbK_BuMfhXYJ0mCg",
         },
         .lmdb = .{
-            .url = "https://github.com/allyourcodebase/lmdb/archive/refs/tags/0.9.31+2.tar.gz",
-            .hash = "lmdb-0.9.31+2-ymBDR9M3AAAuqe96eqjOxou621_bZndPtxiOGnpDSg9Z",
+            .url = "https://github.com/allyourcodebase/lmdb/archive/refs/tags/0.9.35.tar.gz",
+            .hash = "lmdb-0.9.35-ymBDRwk5AABx0_ZY66hLDc3KF-Ja9Jw4uNFFArwol8S_",
         },
     },
     .paths = .{

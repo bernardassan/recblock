@@ -7,11 +7,16 @@ pub fn build(b: *std.Build) void {
     });
 
     const strip = b.option(bool, "strip", "Strip debug information") orelse false;
-    const lto = b.option(bool, "lto", "Enable link time optimization") orelse false;
+    const lto = b.option(std.zig.LtoMode, "lto", "Enable link time optimization") orelse .none;
     const no_bin = b.option(bool, "no-bin", "skip emitting binary for incremental compilation checks") orelse false;
 
     //Add lmdb library for embeded key/value store
     const lmdb_dep = b.dependency("lmdb", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const s2s_dep = b.dependency("s2s", .{
         .target = target,
         .optimize = optimize,
     });
@@ -26,37 +31,33 @@ pub fn build(b: *std.Build) void {
         },
     ) catch unreachable;
 
-    const exe = b.addExecutable(.{
-        .name = exe_name,
+    const module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .strip = strip,
     });
-    exe.want_lto = lto;
 
-    const s2s_dep = b.dependency("s2s", .{
-        .target = target,
-        .optimize = optimize,
+    const exe = b.addExecutable(.{
+        .name = exe_name,
+        .root_module = module,
     });
+    exe.lto = lto;
+
     const s2s = s2s_dep.module("s2s");
     const liblmdb = lmdb_dep.artifact("lmdb");
     const lmdb = lmdb_dep.module("lmdb");
 
-    exe.root_module.addImport("s2s", s2s);
-    exe.root_module.addImport("mdb", lmdb);
-    exe.linkLibrary(liblmdb);
+    module.addImport("s2s", s2s);
+    module.addImport("mdb", lmdb);
+    module.linkLibrary(liblmdb);
+
     b.installArtifact(exe);
 
     const check = b.addExecutable(.{
         .name = "check",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = module,
     });
-    check.root_module.addImport("s2s", s2s);
-    check.root_module.addImport("mdb", lmdb);
-    check.linkLibrary(liblmdb);
 
     // zls with build_on_save_args = ["check", "--watch", "-fincremental"]
     // for ultra fast zig error reporting using incremental compilation
@@ -81,11 +82,8 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const exe_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_module = module,
     });
-    exe_tests.root_module.addImport("s2s", s2s);
-    exe_tests.root_module.addImport("mdb", lmdb);
-    exe_tests.linkLibrary(liblmdb);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&exe_tests.step);

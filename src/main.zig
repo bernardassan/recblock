@@ -3,26 +3,12 @@ const builtin = @import("builtin");
 
 const Cli = @import("Cli.zig");
 
-var default_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-const gpa = if (builtin.link_libc and builtin.mode != .Debug)
-    std.heap.raw_c_allocator
-else
-    default_allocator.allocator();
-
-pub fn main() !void {
-    defer if (builtin.mode == .Debug) {
-        _ = default_allocator.deinit();
-    };
+pub fn main(init: std.process.Init) !void {
     var buf: [1024 * 1024 * 12]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const arena = init.arena;
+    var bfa: std.heap.BufferFirstAllocator = .init(&buf, arena.allocator());
 
-    var arena = std.heap.ArenaAllocator.init(fba.allocator());
-    defer arena.deinit();
-
-    const allocator = arena.allocator();
-
-    var cli = Cli.init(allocator);
-    cli.run();
+    Cli.run(bfa.allocator(), init.io, init.minimal.args);
 }
 
 test {

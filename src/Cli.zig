@@ -1,14 +1,3 @@
-arena: std.mem.Allocator,
-
-const std = @import("std");
-
-const Cli = @This();
-const BlockChain = @import("Blockchain.zig");
-const Wallets = @import("Wallets.zig");
-const Iterator = @import("Iterator.zig");
-const Lmdb = @import("Lmdb.zig");
-const WALLET_STORAGE = "db/wallet.dat";
-
 const Cmd = enum {
     createchain,
     send,
@@ -16,22 +5,15 @@ const Cmd = enum {
     help,
 };
 
-pub fn init(arena: std.mem.Allocator) Cli {
-    return .{ .arena = arena };
-}
-
-pub fn run(self: Cli) void {
-    var buf: [1024]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-
-    var itr = std.process.argsWithAllocator(fba.allocator()) catch unreachable;
+pub fn run(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) void {
+    var itr = args.iterateAllocator(arena) catch unreachable;
     defer itr.deinit();
 
     _ = itr.skip(); //skip name of program
 
     while (itr.next()) |argv| {
         if (std.mem.eql(u8, argv, "clean")) {
-            std.fs.cwd().deleteTree("db") catch unreachable;
+            std.Io.Dir.cwd().deleteTree(io, "db") catch unreachable;
             return;
         }
 
@@ -43,7 +25,7 @@ pub fn run(self: Cli) void {
 
             if (chain_name) |name| {
                 const bc_address = std.mem.bytesAsSlice(Wallets.Address, name)[0];
-                _ = BlockChain.newChain(db_env, self.arena, bc_address, WALLET_STORAGE);
+                _ = BlockChain.newChain(db_env, arena, bc_address, WALLET_STORAGE);
             } else {
                 printUsage(.createchain);
             }
@@ -61,7 +43,7 @@ pub fn run(self: Cli) void {
                                     const to_address = std.mem.bytesAsSlice(Wallets.Address, itr.next().?)[0];
                                     const amount = std.fmt.parseUnsigned(usize, amount_value, 10) catch unreachable;
 
-                                    var bc = BlockChain.getChain(db_env, self.arena);
+                                    var bc = BlockChain.getChain(db_env, arena);
 
                                     bc.sendValue(amount, from_address, to_address);
 
@@ -86,7 +68,7 @@ pub fn run(self: Cli) void {
             }
         } else if (std.mem.eql(u8, argv, "getbalance")) {
             if (itr.next()) |address| {
-                const bc = BlockChain.getChain(db_env, self.arena);
+                const bc = BlockChain.getChain(db_env, arena);
                 const users_address = std.mem.bytesAsSlice(Wallets.Address, address)[0];
                 const balance = bc.getBalance(users_address);
                 std.debug.print("'{[address]s}' has a balance of RBC {[balance]d}\n", .{ .address = users_address, .balance = balance });
@@ -94,16 +76,16 @@ pub fn run(self: Cli) void {
                 printUsage(.getbalance);
             }
         } else if (std.mem.eql(u8, argv, "printchain")) {
-            const bc = BlockChain.getChain(db_env, self.arena);
+            const bc = BlockChain.getChain(db_env, arena);
 
             var chain_iter = Iterator.iterator(bc.arena, bc.db, bc.last_hash);
             chain_iter.print();
         } else if (std.mem.eql(u8, argv, "createwallet")) {
-            const wallets = Wallets.initWallets(self.arena, WALLET_STORAGE);
+            const wallets = Wallets.initWallets(arena, WALLET_STORAGE);
             const wallet_address = wallets.createWallet();
             std.debug.print("Your new address is '{[address]s}'\n", .{ .address = wallet_address });
         } else if (std.mem.eql(u8, argv, "listaddress")) {
-            const wallets = Wallets.getWallets(self.arena, WALLET_STORAGE);
+            const wallets = Wallets.getWallets(arena, WALLET_STORAGE);
             const address_list = wallets.getAddresses();
 
             for (address_list, 0..) |address, index| {
@@ -154,3 +136,13 @@ fn printUsage(cmd: Cmd) void {
     }
     std.process.exit(7);
 }
+
+const Cli = @This();
+const WALLET_STORAGE = "db/wallet.dat";
+
+const std = @import("std");
+
+const BlockChain = @import("Blockchain.zig");
+const Iterator = @import("Iterator.zig");
+const Lmdb = @import("Lmdb.zig");
+const Wallets = @import("Wallets.zig");
