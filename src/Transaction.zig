@@ -14,10 +14,10 @@ const serializer = @import("serializer.zig");
 
 //Transactions just lock values with a script, which can be unlocked only by the one who locked them.
 const Transaction = @This();
-const InList = std.ArrayListUnmanaged(TxInput);
-const OutList = std.ArrayListUnmanaged(TxOutput);
+const InList = std.ArrayList(TxInput);
+const OutList = std.ArrayList(TxOutput);
 ///previous transaction which are found to contain a specified TxID
-pub const PrevTxMap = std.AutoArrayHashMap(TxID, Transaction);
+pub const PrevTxMap = std.AutoHashMapUnmanaged(TxID, Transaction);
 const Wallets = @import("Wallets.zig");
 const Allocator = std.mem.Allocator;
 const Blake3 = std.crypto.hash.Blake3;
@@ -66,7 +66,7 @@ pub const TxInput = struct {
 //A coinbase transaction is a special type of transactions, which doesn’t require previously existing outputs.
 //This is the reward miners get for mining new blocks.
 pub fn initCoinBaseTx(arena: Allocator, to: Wallets.Address, wallet_path: []const u8) Transaction {
-    var inlist = InList{};
+    var inlist: InList = .empty;
     const wallets = Wallets.getWallets(arena, wallet_path);
     const tos_wallet = wallets.getWallet(to);
     inlist.append(
@@ -79,11 +79,19 @@ pub fn initCoinBaseTx(arena: Allocator, to: Wallets.Address, wallet_path: []cons
         },
     ) catch unreachable;
 
-    var outlist = OutList{};
-    outlist.append(arena, TxOutput{ .value = SUBSIDY, .pub_key_hash = Wallet.getPubKeyHash(to) }) catch unreachable;
+    var outlist: OutList = .empty;
+    outlist.append(
+        arena,
+        .{ .value = SUBSIDY, .pub_key_hash = Wallet.getPubKeyHash(to) },
+    ) catch unreachable;
 
-    var tx = Transaction{ .id = undefined, .tx_in = inlist, .tx_out = outlist };
+    var tx: Transaction = .{
+        .id = undefined,
+        .tx_in = inlist,
+        .tx_out = outlist,
+    };
     tx.setId();
+
     return tx;
 }
 
@@ -97,7 +105,7 @@ pub fn initCoinBaseTx(arena: Allocator, to: Wallets.Address, wallet_path: []cons
 ///trimmed copy with tx_inputs storing public_key_hash from referenced outputs
 ///in order to sign a transaction, we need to access the outputs referenced in the inputs of the transaction , thus
 ///we need the transactions that store these outputs. `prev_txs`
-pub fn sign(self: *Transaction, wallet_keys: Wallet.KeyPair, prev_txs: PrevTxMap, fba: Allocator) void {
+pub fn sign(self: *Transaction, fba: Allocator, wallet_keys: Wallet.KeyPair, prev_txs: PrevTxMap) void {
     //Coinbase transactions are not signed because they don't contain real inputs
     if (self.isCoinBaseTx()) return;
 

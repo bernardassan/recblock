@@ -2,16 +2,17 @@
 
 last_hash: [Blake3.digest_length]u8,
 db: Lmdb,
-arena: std.mem.Allocator,
+io: std.Io,
+arena: mem.Allocator,
 wallet_path: []const u8,
 
 const std = @import("std");
 const mem = std.mem;
-const panic = std.debug.panic;
-const info = std.log.info;
+const log = std.log.scoped(.@"src/Blockchain.zig");
 const fmt = std.fmt;
-const fh = fmt.fmtSliceHexUpper;
-const assert = std.debug.assert;
+const debug = std.debug;
+const heap = std.heap;
+const process = std.process;
 
 const BlockChain = @This();
 const Block = @import("Block.zig");
@@ -23,7 +24,7 @@ pub const BLOCK_DB = "blocks";
 pub const LAST = "last";
 const WALLET = "wallet.dat";
 const TxMap = std.AutoHashMap(Transaction.TxID, OutputIndex);
-const OutputIndex = usize;
+const OutputIndex = enum(u64) { _ };
 const Blake3 = std.crypto.hash.Blake3;
 const Wallet = Wallets.Wallet;
 const Address = Wallets.Address;
@@ -35,68 +36,91 @@ pub fn fmtHash(hash: [32]u8) [32]u8 {
 }
 
 //TODO:organise and document exit codes
-pub fn getChain(db: Lmdb, arena: std.mem.Allocator) BlockChain {
+pub fn getChain(db: Lmdb, arena: mem.Allocator, io: std.Io) BlockChain {
     const txn = db.startTxn(.rw, BLOCK_DB);
     defer txn.commitTxns();
 
     if (txn.get([Blake3.digest_length]u8, LAST)) |last_block_hash| {
         const wallet_path = txn.getAlloc([]const u8, arena, WALLET) catch unreachable;
-        return .{ .last_hash = last_block_hash, .db = db, .arena = arena, .wallet_path = wallet_path };
+        return .{
+            .arena = arena,
+            .io = io,
+            .last_hash = last_block_hash,
+            .db = db,
+            .wallet_path = wallet_path,
+        };
     } else |_| {
-        std.log.err("create a blockchain with creatchain command before using any other command", .{});
-        std.process.exit(1);
+        log.err("create a blockchain with creatchain command before using any other command", .{});
+        process.exit(1);
     }
 }
 
 ///create a new BlockChain
-pub fn newChain(db: Lmdb, arena: std.mem.Allocator, address: Wallets.Address, wallet_path: []const u8) BlockChain {
+pub fn newChain(
+    db: Lmdb,
+    arena: mem.Allocator,
+    io: std.Io,
+    address: Wallets.Address,
+    wallet_path: []const u8,
+) BlockChain {
     if (!Wallet.validateAddress(address)) {
-        std.log.err("blockchain address {s} is invalid", .{address});
-        std.process.exit(4);
+        log.err("blockchain address {s} is invalid", .{address});
+        process.exit(4);
     }
     var buf: [1024 * 6]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    var fba: heap.FixedBufferAllocator = .init(&buf);
     const allocator = fba.allocator();
 
-    const coinbase_tx = Transaction.initCoinBaseTx(allocator, address, wallet_path);
-    const genesis_block = Block.genesisBlock(allocator, coinbase_tx);
+    const coinbase_tx: Transaction = .initCoinBaseTx(allocator, address, wallet_path);
+    const genesis_block = Block.genesisBlock(allocator, io, coinbase_tx);
 
     const txn = db.startTxn(.rw, BLOCK_DB);
     defer txn.commitTxns();
 
     txn.put(LAST, genesis_block.hash) catch |newchain_err| switch (newchain_err) {
         error.KeyAlreadyExist => {
-            std.log.err("Attempting to create new chain at an address '{s}' which already contains a chain", .{address});
-            std.process.exit(1);
+            log.err("Attempting to create new chain at an address '{s}' which already contains a chain", .{address});
+            process.exit(1);
         },
         else => unreachable,
     };
+
     txn.putAlloc(allocator, WALLET, wallet_path) catch unreachable;
     txn.putAlloc(allocator, genesis_block.hash[0..], genesis_block) catch unreachable;
 
-    info("new blockchain is create with address '{s}'\nhash of the created blockchain is '{X}'", .{
+    log.info("new blockchain is create with address '{s}'\nhash of the created blockchain is '{X}'", .{
         address,
-        fh(fmtHash(genesis_block.hash)[0..]),
+        genesis_block.hash[0..],
     });
-    info("You get a reward of RBC {d} for mining the coinbase transaction", .{Transaction.SUBSIDY});
+    log.info("You get a reward of RBC {d} for mining the coinbase transaction", .{Transaction.SUBSIDY});
 
-    return .{ .last_hash = genesis_block.hash, .db = db, .arena = arena, .wallet_path = wallet_path };
+    return .{
+        .last_hash = genesis_block.hash,
+        .db = db,
+        .arena = arena,
+        .wallet_path = wallet_path,
+    };
 }
 
 ///add a new Block to the BlockChain
 pub fn mineBlock(bc: *BlockChain, transactions: []const Transaction) void {
     for (transactions) |tx| {
-        assert(bc.verifyTx(tx) == true);
+        debug.assert(bc.verifyTx(tx) == true);
     }
 
     var buf: [8096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    var fba: heap.FixedBufferAllocator = .init(&buf);
     const allocator = fba.allocator();
 
-    const new_block = Block.newBlock(allocator, bc.last_hash, transactions);
-    std.log.info("new transaction is '{X}'", .{fh(fmtHash(new_block.hash)[0..])});
+    const new_block: Block = .newBlock(
+        allocator,
+        bc.io,
+        bc.last_hash,
+        transactions,
+    );
+    log.info("new transaction is '{X}'", .{new_block.hash[0..]});
 
-    assert(new_block.validate() == true);
+    debug.assert(new_block.validate() == true);
 
     const txn = bc.db.startTxn(.rw, BLOCK_DB);
     defer txn.commitTxns();
@@ -112,13 +136,15 @@ fn findUTxs(bc: BlockChain, pub_key_hash: Wallets.PublicKeyHash) []const Transac
     //TODO: find a way to cap the max stack usage
     //INITIA_IDEA: copy relevant data and free blocks
     var buf: [1024 * 950]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(buf[0..]);
+    var fba: heap.FixedBufferAllocator = .init(buf[0..]);
     const allocator = fba.allocator();
 
-    var unspent_txos = std.ArrayList(Transaction).init(bc.arena);
-    var spent_txos = TxMap.init(allocator);
+    var unspent_txos: std.ArrayList(Transaction) = .empty;
+    defer unspent_txos.shrinkToLen(bc.arena) catch @panic("OOM");
 
-    var bc_itr = Iterator.iterator(allocator, bc.db, bc.last_hash);
+    var spent_txos: TxMap = .init(allocator);
+
+    var bc_itr: Iterator = .iterator(allocator, bc.db, bc.last_hash);
 
     while (bc_itr.next()) |block| {
         for (block.transactions.items) |tx| {
@@ -134,7 +160,7 @@ fn findUTxs(bc: BlockChain, pub_key_hash: Wallets.PublicKeyHash) []const Transac
                 //If an output was locked by the same pub_key_hash we’re searching unspent transaction outputs for,
                 //then this is the output we want
                 if (txoutput.isLockedWithKey(pub_key_hash)) {
-                    unspent_txos.append(tx) catch unreachable;
+                    unspent_txos.append(bc.arena, tx) catch unreachable;
                 }
             }
 
@@ -149,33 +175,34 @@ fn findUTxs(bc: BlockChain, pub_key_hash: Wallets.PublicKeyHash) []const Transac
             }
         }
 
-        if (block.previous_hash[0] == '\x00') {
+        if (block.previous_hash[0] == 0x00) {
             break;
         }
     }
-    return unspent_txos.toOwnedSlice() catch unreachable;
+    return unspent_txos.toOwnedSliceAssert();
 }
 
 ///find unspent transaction outputs
 fn findUTxOs(self: BlockChain, pub_key_hash: Wallets.PublicKeyHash) []const Transaction.TxOutput {
-    var tx_output_list = std.ArrayList(Transaction.TxOutput).init(self.arena);
+    var tx_output_list: std.ArrayList(Transaction.TxOutput) = .empty;
+    defer tx_output_list.shrinkToLen(self.arena) catch @panic("OOM");
 
     const unspent_txs = self.findUTxs(pub_key_hash);
 
     for (unspent_txs) |tx| {
         for (tx.tx_out.items) |output| {
             if (output.isLockedWithKey(pub_key_hash)) {
-                tx_output_list.append(output) catch unreachable;
+                tx_output_list.append(self.arena, output) catch @panic("OOM");
             }
         }
     }
-    return tx_output_list.toOwnedSlice() catch unreachable;
+    return tx_output_list.toOwnedSliceAssert();
 }
 
 ///create a new Transaction by moving value from one address to another
 fn newUTx(self: BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Address) Transaction {
-    var input = std.ArrayListUnmanaged(Transaction.TxInput){};
-    var output = std.ArrayListUnmanaged(Transaction.TxOutput){};
+    var input: std.ArrayListUnmanaged(Transaction.TxInput) = .empty;
+    var output: std.ArrayListUnmanaged(Transaction.TxOutput) = .empty;
 
     //Before creating new outputs, we first have to find all unspent outputs and ensure that they store enough value.
     const spendable_txns = self.findSpendableOutputs(Wallet.getPubKeyHash(from), amount);
@@ -183,8 +210,8 @@ fn newUTx(self: BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Ad
     var unspent_output = spendable_txns.unspent_output;
 
     if (accumulated_amount < amount) {
-        std.log.err("not enough funds to transfer RBC {d} from '{s}' to '{s}'", .{ amount, from, to });
-        std.process.exit(2);
+        log.err("not enough funds to transfer RBC {d} from '{s}' to '{s}'", .{ amount, from, to });
+        process.exit(2);
     }
 
     //Build a list of inputs
@@ -269,35 +296,37 @@ fn findTx(self: BlockChain, tx_id: Transaction.TxID) Transaction {
 ///take a transaction `tx` finds all previous transactions it references and sign it with KeyPair `wallet_keys`
 fn signTx(self: BlockChain, tx: *Transaction, wallet_keys: Wallet.KeyPair) void {
     var buf: [1024 * 1024]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    var fba_: heap.FixedBufferAllocator = .init(&buf);
+    const fba = fba_.allocator();
 
-    var prev_txs = Transaction.PrevTxMap.init(fba.allocator());
+    var prev_txs: Transaction.PrevTxMap = .empty;
 
     for (tx.tx_in.items) |value_in| {
         const found_tx = self.findTx(value_in.out_id);
-        prev_txs.putNoClobber(value_in.out_id, found_tx) catch unreachable;
+        prev_txs.putNoClobber(fba, value_in.out_id, found_tx) catch unreachable;
     }
-    tx.sign(wallet_keys, prev_txs, fba.allocator());
+    tx.sign(fba, wallet_keys, prev_txs);
 }
 
 ///take a transaction `tx` finds transactions it references and verify it
 fn verifyTx(self: BlockChain, tx: Transaction) bool {
     var buf: [1024 * 1024]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    var fba_: heap.FixedBufferAllocator = .init(&buf);
+    const fba = fba_.allocator();
 
-    var prev_txs = Transaction.PrevTxMap.init(fba.allocator());
+    var prev_txs: Transaction.PrevTxMap = .empty;
 
     for (tx.tx_in.items) |value_in| {
         const found_tx = self.findTx(value_in.out_id);
-        prev_txs.putNoClobber(value_in.out_id, found_tx) catch unreachable;
+        prev_txs.putNoClobber(fba, value_in.out_id, found_tx) catch unreachable;
     }
-    return tx.verify(prev_txs, fba.allocator());
+    return tx.verify(prev_txs, fba);
 }
 
 pub fn getBalance(self: BlockChain, address: Wallets.Address) usize {
     if (!Wallet.validateAddress(address)) {
-        std.log.err("address {s} is invalid", .{address});
-        std.process.exit(4);
+        log.err("address {s} is invalid", .{address});
+        process.exit(4);
     }
     var balance: usize = 0;
     const utxos = self.findUTxOs(Wallet.getPubKeyHash(address));
@@ -309,16 +338,16 @@ pub fn getBalance(self: BlockChain, address: Wallets.Address) usize {
 }
 
 pub fn sendValue(self: *BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Address) void {
-    assert(amount > 0);
-    assert(!std.mem.eql(u8, &from, &to));
+    debug.assert(amount > 0);
+    debug.assert(!std.mem.eql(u8, &from, &to));
 
     if (!Wallet.validateAddress(from)) {
-        std.log.err("sender address {s} is invalid", .{from});
-        std.process.exit(4);
+        log.err("sender address {s} is invalid", .{from});
+        process.exit(4);
     }
     if (!Wallet.validateAddress(to)) {
-        std.log.err("recipient address {s} is invalid", .{to});
-        std.process.exit(4);
+        log.err("recipient address {s} is invalid", .{to});
+        process.exit(4);
     }
     const new_transaction = self.newUTx(amount, from, to);
 

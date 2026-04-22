@@ -1,22 +1,24 @@
 const std = @import("std");
 const s2s = @import("s2s");
+const mem = std.mem;
+const Io = std.Io;
 
 pub const HASH_SIZE = 8; //size of std.hash.Fnv1a_64 is 64bit which is 8 byte
 
 ///caller must free the returned slice
 ///it is recommend you use either a fixedBufferAllocator or AreanAllocator
-pub fn serializeAlloc(allocator: std.mem.Allocator, data: anytype) []const u8 {
-    var list_stream = std.ArrayList(u8).init(allocator);
-    s2s.serialize(list_stream.writer(), @TypeOf(data), data) catch unreachable;
-    return list_stream.items;
+pub fn serializeAlloc(allocator: mem.Allocator, data: anytype) []const u8 {
+    var list_stream: Io.Writer.Allocating = .init(allocator);
+
+    s2s.serialize(&list_stream.writer, @TypeOf(data), data) catch unreachable;
+    return list_stream.written();
 }
 
 ///serialize data with a comptime known size
 pub fn serialize(data: anytype) [HASH_SIZE + @sizeOf(@TypeOf(data))]u8 {
     var serialized_data: [HASH_SIZE + @sizeOf(@TypeOf(data))]u8 = undefined;
-    var fbr = std.io.fixedBufferStream(&serialized_data);
-    const writer = fbr.writer();
-    s2s.serialize(writer, @TypeOf(data), data) catch unreachable;
+    var fbw: Io.Writer = .fixed(&serialized_data);
+    s2s.serialize(&fbw, @TypeOf(data), data) catch unreachable;
     return serialized_data;
 }
 
@@ -30,11 +32,8 @@ pub fn deserialize(comptime T: type, data: ?*anyopaque, size: usize) T {
     // return std.mem.bytesAsSlice(T, getBytes(data.?, size))[0];
     const serialized_data = getRawBytes(data, 0, size);
 
-    var fbr = std.io.fixedBufferStream(serialized_data);
-    fbr.seekTo(0) catch unreachable;
-
-    const reader = fbr.reader();
-    return s2s.deserialize(reader, T) catch unreachable;
+    var fbr: Io.Reader = .fixed(serialized_data);
+    return s2s.deserialize(&fbr, T) catch unreachable;
 }
 
 ///deserialize types with require allocation
@@ -43,11 +42,8 @@ pub fn deserializeAlloc(comptime T: type, fballocator: std.mem.Allocator, data: 
     // return std.mem.bytesAsSlice(T, getBytes(data.?, size))[0];
     const serialized_data = getRawBytes(data, 0, size);
 
-    var fbr = std.io.fixedBufferStream(serialized_data);
-    fbr.seekTo(0) catch unreachable;
-
-    const reader = fbr.reader();
-    return s2s.deserializeAlloc(reader, T, fballocator) catch unreachable;
+    var fbr: Io.Reader = .fixed(serialized_data);
+    return s2s.deserializeAlloc(&fbr, T, fballocator) catch unreachable;
 }
 
 //IDEAS: consider maybe json serialization but prefer binnary serialization

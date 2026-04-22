@@ -1,5 +1,5 @@
 //when the block is created
-timestamp: i64,
+timestamp: Io.Timestamp,
 //Thus miners must discover by brute force the "nonce" that, when included in the block, results in an acceptable hash.
 nonce: usize = 0,
 //stores the hash of the previous block
@@ -12,6 +12,7 @@ transactions: std.ArrayListUnmanaged(Transaction),
 difficulty_bits: u7 = TARGET_ZERO_BITS, //u7 limit value from 0 to 127 since we can't have a difficult equal in bitsize to the hashsize which is 256
 
 const std = @import("std");
+const Io = std.Io;
 const fmt = std.fmt;
 const mem = std.mem;
 const testing = std.testing;
@@ -28,10 +29,15 @@ const Blake3 = std.crypto.hash.Blake3;
 const TARGET_ZERO_BITS = 8;
 
 ///mine a new block
-pub fn newBlock(arena: std.mem.Allocator, previous_hash: [32]u8, transactions: []const Transaction) Block {
-    var new_block = Block{
-        .timestamp = std.time.timestamp(),
-        .transactions = std.ArrayListUnmanaged(Transaction){},
+pub fn newBlock(
+    arena: mem.Allocator,
+    io: std.Io,
+    previous_hash: [32]u8,
+    transactions: []const Transaction,
+) Block {
+    var new_block: Block = .{
+        .timestamp = .now(io, .real),
+        .transactions = .empty,
         .previous_hash = previous_hash,
     };
     new_block.transactions.appendSlice(arena, transactions) catch unreachable;
@@ -41,8 +47,14 @@ pub fn newBlock(arena: std.mem.Allocator, previous_hash: [32]u8, transactions: [
     return new_block;
 }
 
-pub fn genesisBlock(arena: std.mem.Allocator, coinbase: Transaction) Block {
-    return newBlock(arena, .{'\x00'} ** 32, &.{coinbase});
+pub fn genesisBlock(arena: mem.Allocator, io: Io, coinbase: Transaction) Block {
+    const null_hash: [32]u8 = @splat(0x00);
+    return newBlock(
+        arena,
+        io,
+        null_hash,
+        &.{coinbase},
+    );
 }
 
 ///Validate POW
@@ -55,25 +67,29 @@ pub fn validate(block: Block) bool {
     return is_block_valid;
 }
 
-fn hashBlock(self: Block, nonce: usize) u256 {
+fn hashBlock(block: Block, nonce: usize) u256 {
     //TODO : optimize the sizes of these buffers base on the base and use exactly the amount that is needed
     var time_buf: [16]u8 = undefined;
+    var timestamp: Io.Writer = .fixed(&time_buf);
+    timestamp.printInt(block.timestamp.nanoseconds, 16, .lower, .{}) catch unreachable;
+
     var bits_buf: [3]u8 = undefined;
+    var difficulty_bits: Io.Writer = .fixed(&bits_buf);
+    difficulty_bits.printInt(block.difficulty_bits, 16, .lower, .{}) catch unreachable;
+
     var nonce_buf: [16]u8 = undefined;
+    var nonce_val: Io.Writer = .fixed(&nonce_buf);
+    nonce_val.printInt(nonce, 16, .lower, .{}) catch unreachable;
 
-    const timestamp = fmt.bufPrintIntToSlice(&time_buf, self.timestamp, 16, .lower, .{});
-    const difficulty_bits = fmt.bufPrintIntToSlice(&bits_buf, self.difficulty_bits, 16, .lower, .{});
-    const nonce_val = fmt.bufPrintIntToSlice(&nonce_buf, nonce, 16, .lower, .{});
-
-    var buf: [4096]u8 = undefined;
+    var block_buf: [4096]u8 = undefined;
 
     //timestamp ,previous_hash and hash form the BlockHeader
-    const block_headers = fmt.bufPrint(&buf, "{[previous_hash]s}{[transactions]s}{[timestamp]s}{[difficulty_bits]s}{[nonce]s}", .{
-        .previous_hash = self.previous_hash,
-        .transactions = self.hashTxs(),
-        .timestamp = timestamp,
-        .difficulty_bits = difficulty_bits,
-        .nonce = nonce_val,
+    const block_headers = fmt.bufPrint(&block_buf, "{[previous_hash]s}{[transactions]s}{[timestamp]s}{[difficulty_bits]s}{[nonce]s}", .{
+        .previous_hash = block.previous_hash,
+        .transactions = block.hashTxs(),
+        .timestamp = timestamp.buffered(),
+        .difficulty_bits = difficulty_bits.buffered(),
+        .nonce = nonce_val.buffered(),
     }) catch unreachable;
 
     var hash: [Blake3.digest_length]u8 = undefined;

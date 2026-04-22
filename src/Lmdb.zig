@@ -25,7 +25,7 @@ const BLOCK_DB = @import("Transaction.zig").BLOCK_DB;
 ///initialize db environment (mmap file) specifing the db mode `.rw/.ro`
 ///make sure to start a transaction .ie startTxn() fn before calling any db manipulation fn's
 ///a maximum of two named db's are allowed
-pub fn initdb(db_path: []const u8, txn_type: TxnType) Lmdb {
+pub fn initdb(io: std.Io, db_path: []const u8, txn_type: TxnType) Lmdb {
     var db_env: ?*Env = undefined;
     const env_state = mdb.mdb_env_create(&db_env);
     checkState(env_state) catch unreachable;
@@ -40,7 +40,7 @@ pub fn initdb(db_path: []const u8, txn_type: TxnType) Lmdb {
     const open_state = mdb.mdb_env_open(db_env, db_path.ptr, db_flags, permissions);
     checkState(open_state) catch |open_err| switch (open_err) {
         error.NoSuchFileOrDirectory => {
-            std.fs.cwd().makeDir("db") catch unreachable;
+            std.Io.Dir.cwd().createDirPath(io, "db") catch unreachable;
             const new_open_state = mdb.mdb_env_open(db_env, db_path.ptr, db_flags, permissions);
             checkState(new_open_state) catch unreachable;
         },

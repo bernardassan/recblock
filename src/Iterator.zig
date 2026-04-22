@@ -4,8 +4,7 @@ db: Lmdb,
 current_hash: [32]u8,
 
 const std = @import("std");
-const info = std.log.info;
-const fh = std.fmt.fmtSliceHexUpper;
+const log = std.log.scoped(.@"src/Iterator.zig");
 
 const Iterator = @This();
 const Block = @import("Block.zig");
@@ -37,15 +36,15 @@ pub fn next(self: *Iterator) ?Block {
 pub fn print(chain_iter: *Iterator) void {
     //TODO:work on converting hashes to Big endian which is usually the expected form for display
     //improve the hex formating
-    info("starting blockchain iteration\n", .{});
+    log.info("starting blockchain iteration\n", .{});
     while (chain_iter.next()) |current_block| {
         // const current_block = @intToPtr(*Block, block);
-        info("previous hash is '{X}'", .{fh(fmtHash(current_block.previous_hash)[0..])});
-        info("hash of current block is '{X}'", .{fh(fmtHash(current_block.hash)[0..])});
-        info("nonce is {}", .{current_block.nonce});
-        info("POW: {}\n\n", .{current_block.validate()});
+        log.info("previous hash is '{X}'", .{current_block.previous_hash[0..]});
+        log.info("hash of current block is '{X}'", .{current_block.hash[0..]});
+        log.info("nonce is {}", .{current_block.nonce});
+        log.info("POW: {}\n\n", .{current_block.validate()});
     }
-    info("done", .{});
+    log.info("done", .{});
 }
 // const Self = @This();
 // const cast = @import("serializer.zig").cast;

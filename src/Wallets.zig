@@ -2,14 +2,17 @@
 wallets: WalleltMap,
 ///path to storage for wallets
 wallet_path: []const u8,
+arena: mem.Allocator,
+io: std.Io,
 
 const std = @import("std");
+const mem = std.mem;
 const crypto = std.crypto;
 const base64 = std.base64;
 const serializer = @import("s2s");
 
 pub const Wallets = @This();
-const WalleltMap = std.AutoArrayHashMap(Address, Wallet);
+const WalleltMap = std.array_hash_map.Auto(Address, Wallet);
 pub const Ed25519 = crypto.sign.Ed25519;
 const Blake3 = crypto.hash.Blake3;
 const Blake2b160 = crypto.hash.blake2.Blake2b160;
@@ -30,28 +33,32 @@ const VersionedHash = [VERSION_LEN + PUB_KEY_HASH_LEN]u8;
 const RawAddress = [VERSION_LEN + PUB_KEY_HASH_LEN + ADDR_CKSUM_LEN]u8;
 
 ///use to initialize `Wallets`
-pub fn initWallets(arena: std.mem.Allocator, wallet_path: []const u8) Wallets {
-    return .{ .wallets = WalleltMap.init(arena), .wallet_path = wallet_path };
+pub fn initWallets(arena: mem.Allocator, wallet_path: []const u8) Wallets {
+    return .{
+        .wallets = .empty,
+        .wallet_path = wallet_path,
+        .arena = arena,
+    };
 }
 
-fn newWallet(self: *Wallets) Address {
-    const wallet = Wallet.initWallet();
+fn newWallet(wallets: *Wallets) Address {
+    const wallet: Wallet = .initWallet();
     const wallet_address = wallet.address();
-    self.wallets.putNoClobber(wallet_address, wallet) catch unreachable;
+    wallets.wallets.putNoClobber(wallets.arena, wallet_address, wallet) catch unreachable;
     return wallet_address;
 }
 
 ///create a new wallet and save it into `wallet_path`
-pub fn createWallet(self: Wallets) Address {
-    var wallets = getWallets(self.wallets.allocator, self.wallet_path);
-    const wallet_address = wallets.newWallet();
-    wallets.saveWallets();
+pub fn createWallet(wallets: Wallets) Address {
+    var wallets_ = getWallets(wallets.arena, wallets.wallet_path);
+    const wallet_address = wallets_.newWallet();
+    wallets_.saveWallets();
     return wallet_address;
 }
 
 //TODO: optimize so that not all wallets are loaded into memory this is a potentially expensive operation
 ///return previous wallets from `wallet_path` else return a new empty wallet
-pub fn getWallets(arena: std.mem.Allocator, wallet_path: []const u8) Wallets {
+pub fn getWallets(arena: mem.Allocator, wallet_path: []const u8) Wallets {
     var wallets = initWallets(arena, wallet_path);
     wallets.loadWallets();
     return wallets;
@@ -67,23 +74,25 @@ pub fn getWallet(self: Wallets, address: Address) Wallet {
 }
 
 ///load saved wallet data
-fn loadWallets(self: *Wallets) void {
-    const file = std.fs.cwd().openFile(self.wallet_path, .{}) catch |err| switch (err) {
+fn loadWallets(wallets: *Wallets) void {
+    const file = std.Io.Dir.cwd().openFile(wallets.io, wallets.wallet_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => unreachable,
     };
-    defer file.close();
+    defer file.close(wallets.io);
 
-    var breader = std.io.bufferedReader(file.reader());
-    const reader = breader.reader();
+    var buf: [1024]u8 = undefined;
+    var fr = file.reader(wallets.io, &buf);
+    const fri = &fr.interface;
+
     while (true) {
-        const wallet_key = serializer.deserialize(reader, Address) catch |err| switch (err) {
+        const wallet_key = serializer.deserialize(fri, Address) catch |err| switch (err) {
             error.EndOfStream => return,
             else => unreachable,
         };
-        const wallet_value = serializer.deserialize(reader, Wallet) catch unreachable;
+        const wallet_value = serializer.deserialize(fri, Wallet) catch unreachable;
 
-        self.wallets.putNoClobber(wallet_key, wallet_value) catch unreachable;
+        wallets.wallets.putNoClobber(wallets.arena, wallet_key, wallet_value) catch unreachable;
     }
 }
 //TODO: oraganize exit codes
@@ -140,7 +149,7 @@ pub const Wallet = struct {
 
         const target_chksum = checksum(version(decoded_version, decoded_pub_key_hash));
 
-        return std.mem.eql(u8, actual_cksum[0..], target_chksum[0..]);
+        return mem.eql(u8, actual_cksum[0..], target_chksum[0..]);
     }
 
     //use base64 instead of bitcoins base58 for encoding address payload
@@ -148,7 +157,7 @@ pub const Wallet = struct {
         var buf: RawAddress = undefined;
         var fba = std.heap.FixedBufferAllocator.init(&buf);
 
-        const address_to_encode = std.mem.concat(fba.allocator(), u8, &.{ &versioned_payload, &checksum_payload }) catch unreachable;
+        const address_to_encode = mem.concat(fba.allocator(), u8, &.{ &versioned_payload, &checksum_payload }) catch unreachable;
 
         const encoder = comptime base64.Base64Encoder.init(base64.url_safe_alphabet_chars, null);
         var dest_buf: Address = undefined;
@@ -162,7 +171,7 @@ pub const Wallet = struct {
         const decoder = base64.Base64Decoder.init(base64.url_safe_alphabet_chars, null);
         const decoded_buf = buf[0 .. decoder.calcSizeForSlice(wallet_address[0..]) catch unreachable];
         decoder.decode(decoded_buf, wallet_address[0..]) catch unreachable;
-        return std.mem.bytesAsSlice(RawAddress, decoded_buf)[0];
+        return mem.bytesAsSlice(RawAddress, decoded_buf)[0];
     }
 
     pub fn getPubKeyHash(wallet_address: Address) PublicKeyHash {
@@ -175,7 +184,7 @@ pub const Wallet = struct {
         var versioned_payload_buf: VersionedHash = undefined;
         var fba = std.heap.FixedBufferAllocator.init(&versioned_payload_buf);
 
-        _ = std.mem.concat(fba.allocator(), u8, &.{ &.{wallet_version}, pub_key_hash[0..] }) catch unreachable;
+        _ = mem.concat(fba.allocator(), u8, &.{ &.{wallet_version}, pub_key_hash[0..] }) catch unreachable;
         return versioned_payload_buf;
     }
 

@@ -17,7 +17,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) void {
             return;
         }
 
-        var db_env = Lmdb.initdb("db", .rw);
+        var db_env = Lmdb.initdb(io, "db", .rw);
         defer db_env.deinitdb();
 
         if (std.mem.eql(u8, argv, "createchain")) {
@@ -25,7 +25,7 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) void {
 
             if (chain_name) |name| {
                 const bc_address = std.mem.bytesAsSlice(Wallets.Address, name)[0];
-                _ = BlockChain.newChain(db_env, arena, bc_address, WALLET_STORAGE);
+                _ = BlockChain.newChain(db_env, arena, io, bc_address, WALLET_STORAGE);
             } else {
                 printUsage(.createchain);
             }
