@@ -1,6 +1,6 @@
 //READ: https://en.bitcoin.it/wiki/Block_hashing_algorithm https://en.bitcoin.it/wiki/Proof_of_work https://en.bitcoin.it/wiki/Hashcash
 
-last_hash: [Blake3.digest_length]u8,
+last_hash: Transaction.TxID,
 db: Lmdb,
 io: std.Io,
 arena: mem.Allocator,
@@ -23,9 +23,7 @@ const Wallets = @import("Wallets.zig");
 pub const BLOCK_DB = "blocks";
 pub const LAST = "last";
 const WALLET = "wallet.dat";
-const TxMap = std.AutoHashMap(Transaction.TxID, OutputIndex);
-const OutputIndex = enum(u64) { _ };
-const Blake3 = std.crypto.hash.Blake3;
+const TxMap = std.AutoHashMap(Transaction.TxID, Transaction.OutputIndex);
 const Wallet = Wallets.Wallet;
 const Address = Wallets.Address;
 
@@ -40,7 +38,7 @@ pub fn getChain(db: Lmdb, arena: mem.Allocator, io: std.Io) BlockChain {
     const txn = db.startTxn(.rw, BLOCK_DB);
     defer txn.commitTxns();
 
-    if (txn.get([Blake3.digest_length]u8, LAST)) |last_block_hash| {
+    if (txn.get(Transaction.TxID, LAST)) |last_block_hash| {
         const wallet_path = txn.getAlloc([]const u8, arena, WALLET) catch unreachable;
         return .{
             .arena = arena,
@@ -71,8 +69,8 @@ pub fn newChain(
     var fba: heap.FixedBufferAllocator = .init(&buf);
     const allocator = fba.allocator();
 
-    const coinbase_tx: Transaction = .initCoinBaseTx(allocator, address, wallet_path);
-    const genesis_block = Block.genesisBlock(allocator, io, coinbase_tx);
+    const coinbase_tx: Transaction = .initCoinBaseTx(allocator, io, address, wallet_path);
+    const genesis_block: Block = .genesisBlock(allocator, io, coinbase_tx);
 
     const txn = db.startTxn(.rw, BLOCK_DB);
     defer txn.commitTxns();
@@ -97,6 +95,7 @@ pub fn newChain(
     return .{
         .last_hash = genesis_block.hash,
         .db = db,
+        .io = io,
         .arena = arena,
         .wallet_path = wallet_path,
     };
@@ -152,7 +151,7 @@ fn findUTxs(bc: BlockChain, pub_key_hash: Wallets.PublicKeyHash) []const Transac
                 //was the output spent? We skip those that were referenced in inputs (their values were moved to
                 //other outputs, thus we cannot count them)
                 if (spent_txos.get(tx.id)) |spent_output_index| {
-                    if (spent_output_index == txindex) {
+                    if (spent_output_index.toU64() == txindex) {
                         continue :output;
                     }
                 }
@@ -200,7 +199,7 @@ fn findUTxOs(self: BlockChain, pub_key_hash: Wallets.PublicKeyHash) []const Tran
 }
 
 ///create a new Transaction by moving value from one address to another
-fn newUTx(self: BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Address) Transaction {
+fn newUTx(self: BlockChain, amount: Transaction.Coins, from: Wallets.Address, to: Wallets.Address) Transaction {
     var input: std.ArrayListUnmanaged(Transaction.TxInput) = .empty;
     var output: std.ArrayListUnmanaged(Transaction.TxOutput) = .empty;
 
@@ -209,7 +208,7 @@ fn newUTx(self: BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Ad
     const accumulated_amount = spendable_txns.accumulated_amount;
     var unspent_output = spendable_txns.unspent_output;
 
-    if (accumulated_amount < amount) {
+    if (accumulated_amount.toU64() < amount.toU64()) {
         log.err("not enough funds to transfer RBC {d} from '{s}' to '{s}'", .{ amount, from, to });
         process.exit(2);
     }
@@ -217,7 +216,7 @@ fn newUTx(self: BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Ad
     //Build a list of inputs
     //for each found output an input referencing it is created.
     var itr = unspent_output.iterator();
-    const wallets = Wallets.getWallets(self.arena, self.wallet_path);
+    const wallets: Wallets = .getWallets(self.arena, self.io, self.wallet_path);
     const froms_wallet = wallets.getWallet(from);
 
     while (itr.next()) |kv| {
@@ -226,7 +225,7 @@ fn newUTx(self: BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Ad
 
         input.append(
             self.arena,
-            Transaction.TxInput{
+            .{
                 .out_id = txid,
                 .out_index = out_index,
                 .sig = std.mem.zeroes(Wallets.Signature),
@@ -237,47 +236,56 @@ fn newUTx(self: BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Ad
 
     //Build a list of outputs
     //The output that’s locked with the receiver address. This is the actual transferring of coins to other address.
-    output.append(self.arena, Transaction.TxOutput{ .value = amount, .pub_key_hash = Wallet.getPubKeyHash(to) }) catch unreachable;
+    output.append(
+        self.arena,
+        .{ .value = amount, .pub_key_hash = Wallet.getPubKeyHash(to) },
+    ) catch unreachable;
 
     //The output that’s locked with the sender address. This is a change. It’s only created when unspent outputs hold
     //more value than required for the new transaction. Remember: outputs are indivisible.
-    if (accumulated_amount > amount) {
-        output.append(self.arena, Transaction.TxOutput{ .value = (accumulated_amount - amount), .pub_key_hash = Wallet.getPubKeyHash(from) }) catch unreachable;
+    if (accumulated_amount.toU64() > amount.toU64()) {
+        output.append(self.arena, .{
+            .value = accumulated_amount.sub(amount),
+            .pub_key_hash = Wallet.getPubKeyHash(from),
+        }) catch unreachable;
     }
 
-    var newtx = Transaction.newTx(input, output);
+    var newtx: Transaction = .newTx(input, output);
     //we sign the transaction with the keys of the owner/sender of the value
     self.signTx(&newtx, froms_wallet.wallet_keys);
     return newtx;
 }
 
-fn findSpendableOutputs(self: BlockChain, pub_key_hash: Wallets.PublicKeyHash, amount: usize) struct {
-    accumulated_amount: usize,
+fn findSpendableOutputs(self: BlockChain, pub_key_hash: Wallets.PublicKeyHash, amount: Transaction.Coins) struct {
+    accumulated_amount: Transaction.Coins,
     unspent_output: TxMap,
 } {
     var unspent_output = TxMap.init(self.arena);
 
     const unspentTxs = self.findUTxs(pub_key_hash);
 
-    var accumulated_amount: usize = 0;
+    var accumulated_amount: Transaction.Coins = .zero;
 
     // //The method iterates over all unspent transactions and accumulates their values.
     spendables: for (unspentTxs) |tx| {
         //When the accumulated value is more or equals to the amount we want to transfer, it stops and returns the
         //accumulated value and output indices grouped by transaction IDs. We don’t want to take more than we’re going to spend.
         for (tx.tx_out.items, 0..) |output, out_index| {
-            if (output.isLockedWithKey(pub_key_hash) and accumulated_amount < amount) {
-                accumulated_amount += output.value;
-                unspent_output.putNoClobber(tx.id, out_index) catch unreachable;
+            if (output.isLockedWithKey(pub_key_hash) and accumulated_amount.toU64() < amount.toU64()) {
+                accumulated_amount = accumulated_amount.add(output.value);
+                unspent_output.putNoClobber(tx.id, .toIndex(out_index)) catch unreachable;
 
-                if (accumulated_amount >= amount) {
+                if (accumulated_amount.toU64() >= amount.toU64()) {
                     break :spendables;
                 }
             }
         }
     }
 
-    return .{ .accumulated_amount = accumulated_amount, .unspent_output = unspent_output };
+    return .{
+        .accumulated_amount = accumulated_amount,
+        .unspent_output = unspent_output,
+    };
 }
 
 ///finds a transaction by its ID.This is used to build the `PrevTxMap`
@@ -294,7 +302,7 @@ fn findTx(self: BlockChain, tx_id: Transaction.TxID) Transaction {
 }
 
 ///take a transaction `tx` finds all previous transactions it references and sign it with KeyPair `wallet_keys`
-fn signTx(self: BlockChain, tx: *Transaction, wallet_keys: Wallet.KeyPair) void {
+fn signTx(bc: BlockChain, tx: *Transaction, wallet_keys: Wallet.KeyPair) void {
     var buf: [1024 * 1024]u8 = undefined;
     var fba_: heap.FixedBufferAllocator = .init(&buf);
     const fba = fba_.allocator();
@@ -302,10 +310,10 @@ fn signTx(self: BlockChain, tx: *Transaction, wallet_keys: Wallet.KeyPair) void 
     var prev_txs: Transaction.PrevTxMap = .empty;
 
     for (tx.tx_in.items) |value_in| {
-        const found_tx = self.findTx(value_in.out_id);
+        const found_tx = bc.findTx(value_in.out_id);
         prev_txs.putNoClobber(fba, value_in.out_id, found_tx) catch unreachable;
     }
-    tx.sign(fba, wallet_keys, prev_txs);
+    tx.sign(fba, bc.io, wallet_keys, prev_txs);
 }
 
 ///take a transaction `tx` finds transactions it references and verify it
@@ -323,22 +331,22 @@ fn verifyTx(self: BlockChain, tx: Transaction) bool {
     return tx.verify(prev_txs, fba);
 }
 
-pub fn getBalance(self: BlockChain, address: Wallets.Address) usize {
+pub fn getBalance(self: BlockChain, address: Wallets.Address) Transaction.Coins {
     if (!Wallet.validateAddress(address)) {
         log.err("address {s} is invalid", .{address});
         process.exit(4);
     }
-    var balance: usize = 0;
+    var balance: Transaction.Coins = .zero;
     const utxos = self.findUTxOs(Wallet.getPubKeyHash(address));
 
     for (utxos) |utxo| {
-        balance += utxo.value;
+        balance = balance.add(utxo.value);
     }
     return balance;
 }
 
-pub fn sendValue(self: *BlockChain, amount: usize, from: Wallets.Address, to: Wallets.Address) void {
-    debug.assert(amount > 0);
+pub fn sendValue(self: *BlockChain, amount: Transaction.Coins, from: Wallets.Address, to: Wallets.Address) void {
+    debug.assert(amount != Transaction.Coins.zero);
     debug.assert(!std.mem.eql(u8, &from, &to));
 
     if (!Wallet.validateAddress(from)) {
@@ -361,7 +369,7 @@ test "getBalance , sendValue" {
     try tmp.dir.makePath(tmp.sub_path[0..]);
 
     const ta = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(ta);
+    var arena: std.heap.ArenaAllocator = .init(ta);
     defer arena.deinit();
     const allocator = arena.allocator();
 
@@ -371,7 +379,7 @@ test "getBalance , sendValue" {
     defer db.deinitdb();
 
     const wallet_path = try std.fmt.allocPrint(allocator, "zig-cache/tmp/{s}/wallet.dat", .{tmp.sub_path[0..]});
-    var wallets = Wallets.initWallets(allocator, wallet_path);
+    var wallets: Wallets = .initWallets(allocator, wallet_path);
 
     const genesis_wallet = wallets.createWallet();
     var bc = newChain(db, allocator, genesis_wallet, wallets.wallet_path);

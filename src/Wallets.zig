@@ -3,10 +3,11 @@ wallets: WalleltMap,
 ///path to storage for wallets
 wallet_path: []const u8,
 arena: mem.Allocator,
-io: std.Io,
+io: Io,
 
 const std = @import("std");
 const mem = std.mem;
+const Io = std.Io;
 const crypto = std.crypto;
 const base64 = std.base64;
 const serializer = @import("s2s");
@@ -33,16 +34,17 @@ const VersionedHash = [VERSION_LEN + PUB_KEY_HASH_LEN]u8;
 const RawAddress = [VERSION_LEN + PUB_KEY_HASH_LEN + ADDR_CKSUM_LEN]u8;
 
 ///use to initialize `Wallets`
-pub fn initWallets(arena: mem.Allocator, wallet_path: []const u8) Wallets {
+pub fn initWallets(arena: mem.Allocator, io: Io, wallet_path: []const u8) Wallets {
     return .{
         .wallets = .empty,
         .wallet_path = wallet_path,
         .arena = arena,
+        .io = io,
     };
 }
 
 fn newWallet(wallets: *Wallets) Address {
-    const wallet: Wallet = .initWallet();
+    const wallet: Wallet = .initWallet(wallets.io);
     const wallet_address = wallet.address();
     wallets.wallets.putNoClobber(wallets.arena, wallet_address, wallet) catch unreachable;
     return wallet_address;
@@ -50,7 +52,7 @@ fn newWallet(wallets: *Wallets) Address {
 
 ///create a new wallet and save it into `wallet_path`
 pub fn createWallet(wallets: Wallets) Address {
-    var wallets_ = getWallets(wallets.arena, wallets.wallet_path);
+    var wallets_ = getWallets(wallets.arena, wallets.io, wallets.wallet_path);
     const wallet_address = wallets_.newWallet();
     wallets_.saveWallets();
     return wallet_address;
@@ -58,8 +60,8 @@ pub fn createWallet(wallets: Wallets) Address {
 
 //TODO: optimize so that not all wallets are loaded into memory this is a potentially expensive operation
 ///return previous wallets from `wallet_path` else return a new empty wallet
-pub fn getWallets(arena: mem.Allocator, wallet_path: []const u8) Wallets {
-    var wallets = initWallets(arena, wallet_path);
+pub fn getWallets(arena: mem.Allocator, io: Io, wallet_path: []const u8) Wallets {
+    var wallets = initWallets(arena, io, wallet_path);
     wallets.loadWallets();
     return wallets;
 }
@@ -75,7 +77,7 @@ pub fn getWallet(self: Wallets, address: Address) Wallet {
 
 ///load saved wallet data
 fn loadWallets(wallets: *Wallets) void {
-    const file = std.Io.Dir.cwd().openFile(wallets.io, wallets.wallet_path, .{}) catch |err| switch (err) {
+    const file = Io.Dir.cwd().openFile(wallets.io, wallets.wallet_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => unreachable,
     };
@@ -98,22 +100,24 @@ fn loadWallets(wallets: *Wallets) void {
 //TODO: oraganize exit codes
 //TODO: a way to efficiently save wallets .ie something like write only part which aren't already in the file
 ///save wallets to `wallet_path` field
-fn saveWallets(self: Wallets) void {
-    const file = std.fs.cwd().openFile(self.wallet_path, .{ .mode = .write_only }) catch |err| switch (err) {
-        error.FileNotFound => std.fs.cwd().createFile(self.wallet_path, .{}) catch unreachable,
+fn saveWallets(wallets: Wallets) void {
+    const file = Io.Dir.cwd().openFile(wallets.io, wallets.wallet_path, .{ .mode = .write_only }) catch |err| switch (err) {
+        error.FileNotFound => Io.Dir.cwd().createFile(wallets.io, wallets.wallet_path, .{}) catch unreachable,
         else => unreachable,
     };
-    defer file.close();
+    defer file.close(wallets.io);
 
-    var bwriter = std.io.bufferedWriter(file.writer());
-    defer bwriter.flush() catch unreachable;
-    const writer = bwriter.writer();
+    var buf: [1024]u8 = undefined;
+    var bfw = file.writer(wallets.io, &buf);
+    defer bfw.flush() catch unreachable;
 
-    var itr = self.wallets.iterator();
+    const w = &bfw.interface;
+
+    var itr = wallets.wallets.iterator();
 
     while (itr.next()) |key_value| {
-        serializer.serialize(writer, Address, key_value.key_ptr.*) catch unreachable;
-        serializer.serialize(writer, Wallet, key_value.value_ptr.*) catch unreachable;
+        serializer.serialize(w, Address, key_value.key_ptr.*) catch unreachable;
+        serializer.serialize(w, Wallet, key_value.value_ptr.*) catch unreachable;
     }
 }
 
@@ -125,8 +129,8 @@ pub const Wallet = struct {
     wallet_keys: KeyPair,
 
     ///use to initialize `Wallet` ie. the public and private keys
-    pub fn initWallet() Wallet {
-        return .{ .wallet_keys = Ed25519.KeyPair.generate() };
+    pub fn initWallet(io: Io) Wallet {
+        return .{ .wallet_keys = Ed25519.KeyPair.generate(io) };
     }
 
     pub fn address(self: Wallet) Address {

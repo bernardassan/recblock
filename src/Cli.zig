@@ -5,14 +5,14 @@ const Cmd = enum {
     help,
 };
 
-pub fn run(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) void {
+pub fn run(arena: mem.Allocator, io: std.Io, args: std.process.Args) void {
     var itr = args.iterateAllocator(arena) catch unreachable;
     defer itr.deinit();
 
     _ = itr.skip(); //skip name of program
 
     while (itr.next()) |argv| {
-        if (std.mem.eql(u8, argv, "clean")) {
+        if (mem.eql(u8, argv, "clean")) {
             std.Io.Dir.cwd().deleteTree(io, "db") catch unreachable;
             return;
         }
@@ -20,32 +20,32 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) void {
         var db_env = Lmdb.initdb(io, "db", .rw);
         defer db_env.deinitdb();
 
-        if (std.mem.eql(u8, argv, "createchain")) {
+        if (mem.eql(u8, argv, "createchain")) {
             const chain_name = itr.next();
 
             if (chain_name) |name| {
-                const bc_address = std.mem.bytesAsSlice(Wallets.Address, name)[0];
+                const bc_address = mem.bytesAsSlice(Wallets.Address, name)[0];
                 _ = BlockChain.newChain(db_env, arena, io, bc_address, WALLET_STORAGE);
             } else {
                 printUsage(.createchain);
             }
-        } else if (std.mem.eql(u8, argv, "send")) {
+        } else if (mem.eql(u8, argv, "send")) {
             if (itr.next()) |amount_option| {
-                if (std.mem.eql(u8, amount_option, "--amount")) {
+                if (mem.eql(u8, amount_option, "--amount")) {
                     const amount_value = itr.next().?;
 
                     if (itr.next()) |from_option| {
-                        if (std.mem.eql(u8, from_option, "--from")) {
-                            const from_address = std.mem.bytesAsSlice(Wallets.Address, itr.next().?)[0];
+                        if (mem.eql(u8, from_option, "--from")) {
+                            const from_address = mem.bytesAsSlice(Wallets.Address, itr.next().?)[0];
 
                             if (itr.next()) |to_option| {
-                                if (std.mem.eql(u8, to_option, "--to")) {
-                                    const to_address = std.mem.bytesAsSlice(Wallets.Address, itr.next().?)[0];
+                                if (mem.eql(u8, to_option, "--to")) {
+                                    const to_address = mem.bytesAsSlice(Wallets.Address, itr.next().?)[0];
                                     const amount = std.fmt.parseUnsigned(usize, amount_value, 10) catch unreachable;
 
-                                    var bc = BlockChain.getChain(db_env, arena);
+                                    var bc: BlockChain = .getChain(db_env, arena, io);
 
-                                    bc.sendValue(amount, from_address, to_address);
+                                    bc.sendValue(.toCoin(amount), from_address, to_address);
 
                                     std.debug.print("done sending RBC {d} from '{s}' to '{s}'\n", .{ amount, from_address, to_address });
                                     std.debug.print("'{[from_address]s}' now has a balance of RBC {[from_balance]d} and '{[to_address]s}' a balance of RBC {[to_balance]d}\n", .{
@@ -66,26 +66,26 @@ pub fn run(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) void {
             } else {
                 printUsage(.send);
             }
-        } else if (std.mem.eql(u8, argv, "getbalance")) {
+        } else if (mem.eql(u8, argv, "getbalance")) {
             if (itr.next()) |address| {
-                const bc = BlockChain.getChain(db_env, arena);
-                const users_address = std.mem.bytesAsSlice(Wallets.Address, address)[0];
+                const bc: BlockChain = .getChain(db_env, arena, io);
+                const users_address = mem.bytesAsSlice(Wallets.Address, address)[0];
                 const balance = bc.getBalance(users_address);
                 std.debug.print("'{[address]s}' has a balance of RBC {[balance]d}\n", .{ .address = users_address, .balance = balance });
             } else {
                 printUsage(.getbalance);
             }
-        } else if (std.mem.eql(u8, argv, "printchain")) {
-            const bc = BlockChain.getChain(db_env, arena);
+        } else if (mem.eql(u8, argv, "printchain")) {
+            const bc: BlockChain = .getChain(db_env, arena, io);
 
-            var chain_iter = Iterator.iterator(bc.arena, bc.db, bc.last_hash);
+            var chain_iter: Iterator = .iterator(bc.arena, bc.db, bc.last_hash);
             chain_iter.print();
-        } else if (std.mem.eql(u8, argv, "createwallet")) {
-            const wallets = Wallets.initWallets(arena, WALLET_STORAGE);
+        } else if (mem.eql(u8, argv, "createwallet")) {
+            const wallets: Wallets = .initWallets(arena, io, WALLET_STORAGE);
             const wallet_address = wallets.createWallet();
             std.debug.print("Your new address is '{[address]s}'\n", .{ .address = wallet_address });
-        } else if (std.mem.eql(u8, argv, "listaddress")) {
-            const wallets = Wallets.getWallets(arena, WALLET_STORAGE);
+        } else if (mem.eql(u8, argv, "listaddress")) {
+            const wallets: Wallets = .getWallets(arena, io, WALLET_STORAGE);
             const address_list = wallets.getAddresses();
 
             for (address_list, 0..) |address, index| {
@@ -141,6 +141,7 @@ const Cli = @This();
 const WALLET_STORAGE = "db/wallet.dat";
 
 const std = @import("std");
+const mem = std.mem;
 
 const BlockChain = @import("Blockchain.zig");
 const Iterator = @import("Iterator.zig");
